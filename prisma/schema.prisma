@@ -1,0 +1,160 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String           @id @default(uuid())
+  email         String           @unique
+  password      String
+  name          String?
+  role          String           @default("USER")
+  isActive      Boolean          @default(true)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  assignedLeads Lead[]           @relation("LeadAssignedTo")
+  createdLeads  Lead[]           @relation("LeadCreatedBy")
+  followUps     FollowUp[]       @relation("FollowUpCreatedBy")
+  refreshSessions RefreshSession[] @relation("UserRefreshSessions")
+
+  @@index([email])
+  @@index([isActive])
+}
+
+model RefreshSession {
+  id           String    @id @default(uuid())
+  userId       String
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user User @relation("UserRefreshSessions", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Lead {
+  id              String        @id @default(uuid())
+  leadNumber      Int           @unique @default(autoincrement())
+  clientName      String?
+  companyName     String?
+  phone           String?
+  whatsapp        String?
+  email           String?
+  city            String?
+  source          LeadSource?
+  requirementType String?
+  requirement     String?
+  estimatedValue  Float?
+  priority        LeadPriority?
+  status          LeadStatus    @default(New)
+  initialNotes    String?
+  assignedToId    String?
+  nextFollowUpAt  DateTime?
+  lastContactAt   DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  isDeleted       Boolean       @default(false)
+  deletedAt       DateTime?
+  createdById     String
+  followUps       FollowUp[]
+  assignedTo      User?         @relation("LeadAssignedTo", fields: [assignedToId], references: [id])
+  createdBy       User          @relation("LeadCreatedBy", fields: [createdById], references: [id])
+
+  @@index([id])
+  @@index([leadNumber])
+  @@index([phone])
+  @@index([companyName])
+  @@index([createdAt])
+  @@index([nextFollowUpAt])
+  @@index([assignedToId])
+  @@index([createdById])
+  @@index([isDeleted])
+}
+
+model FollowUp {
+  id             String          @id @default(uuid())
+  leadId         String
+  lead           Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdById    String
+  createdBy      User            @relation("FollowUpCreatedBy", fields: [createdById], references: [id])
+  type           FollowUpType
+  status         FollowUpStatus  @default(PENDING)
+  scheduledAt    DateTime?
+  occurredAt     DateTime?
+  notes          String?
+  result         FollowUpResult?
+  completedAt    DateTime?
+  nextFollowUpAt DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([leadId])
+  @@index([createdById])
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([createdById, status, scheduledAt])
+}
+
+enum LeadStatus {
+  New
+  Contacted
+  DesignPending
+  EstimateSent
+  ProposalSent
+  Negotiation
+  Approved
+  Rejected
+  Converted
+}
+
+enum LeadPriority {
+  Low
+  Medium
+  High
+  Urgent
+}
+
+enum LeadSource {
+  Website
+  Referral
+  ColdCall
+  Email
+  SocialMedia
+  TradeShow
+  Advertisement
+  Other
+}
+
+enum FollowUpType {
+  CALL
+  WHATSAPP
+  EMAIL
+  MEETING
+  SITE_VISIT
+  OTHER
+}
+
+enum FollowUpResult {
+  INTERESTED
+  NEED_MORE_INFORMATION
+  QUOTATION_REQUIRED
+  QUOTATION_SENT
+  WAITING
+  NOT_INTERESTED
+  CALL_BACK_LATER
+  OTHER
+}
+
+enum FollowUpStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
