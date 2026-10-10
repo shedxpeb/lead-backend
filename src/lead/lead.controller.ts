@@ -25,6 +25,9 @@ import { ExportLeadsDto } from './dto/export-leads.dto';
 import { ImportLeadsDto } from './dto/import-leads.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
+// Import Multer types
+import 'multer';
+
 @ApiTags('leads')
 @ApiBearerAuth()
 @Controller('leads')
@@ -104,20 +107,27 @@ export class LeadController {
   @Post('import/validate')
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
-  validateImport(
+  async validateImport(
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser('id') userId: string,
   ) {
     if (!file) {
       throw new BadRequestException('No file uploaded');
     }
-    return this.leadService.validateImportFile(file, userId);
+    const result = await this.leadService.validateImportFile(file, userId);
+    return {
+      success: true,
+      requestId: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      message: 'File validated successfully',
+      data: result,
+    };
   }
 
   @Post('import')
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
-  importLeads(
+  async importLeads(
     @UploadedFile() file: Express.Multer.File,
     @Body() body: ImportLeadsDto,
     @CurrentUser('id') userId: string,
@@ -125,6 +135,13 @@ export class LeadController {
     if (!file) {
       throw new BadRequestException('No file uploaded');
     }
-    return this.leadService.importLeads(file, body.duplicateHandling, userId);
+    const result = await this.leadService.importLeads(file, body.duplicateHandling, userId);
+    return {
+      success: true,
+      requestId: Date.now().toString(),
+      timestamp: new Date().toISOString(),
+      message: 'Leads imported successfully',
+      data: result,
+    };
   }
 }
