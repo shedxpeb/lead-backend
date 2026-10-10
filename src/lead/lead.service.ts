@@ -9,7 +9,6 @@ import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { ExportLeadsDto } from './dto/export-leads.dto';
 import { ImportValidationResult, ImportResult, ImportRowError } from './dto/import-validation.dto';
-import * as XLSX from 'xlsx';
 import * as ExcelJS from 'exceljs';
 
 @Injectable()
@@ -521,6 +520,11 @@ export class LeadService {
       return strValue;
     };
 
+    const formatNumber = (value: any): string => {
+      if (value === null || value === undefined) return '';
+      return String(value);
+    };
+
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Leads');
 
@@ -571,7 +575,7 @@ export class LeadService {
         source: lead.source || '',
         requirementType: sanitizeValue(lead.requirementType) || '',
         requirement: sanitizeValue(lead.requirement) || '',
-        estimatedValue: lead.estimatedValue || '',
+        estimatedValue: formatNumber(lead.estimatedValue),
         priority: lead.priority || '',
         status: lead.status || '',
         initialNotes: sanitizeValue(lead.initialNotes) || '',
@@ -630,9 +634,9 @@ export class LeadService {
 
       // Define columns
       worksheet.columns = [
-        { header: 'Client Name*', key: 'clientName', width: 25 },
+        { header: 'Client Name', key: 'clientName', width: 25 },
         { header: 'Company Name', key: 'companyName', width: 25 },
-        { header: 'Phone*', key: 'phone', width: 18 },
+        { header: 'Phone', key: 'phone', width: 18 },
         { header: 'WhatsApp', key: 'whatsapp', width: 18 },
         { header: 'Email', key: 'email', width: 30 },
         { header: 'City', key: 'city', width: 15 },
@@ -657,32 +661,7 @@ export class LeadService {
       headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
       headerRow.height = 25;
 
-      // Add example row
-      worksheet.addRow({
-        clientName: 'John Doe',
-        companyName: 'Acme Corporation',
-        phone: '+919876543210',
-        whatsapp: '+919876543210',
-        email: 'john.doe@example.com',
-        city: 'Mumbai',
-        source: 'Website',
-        requirementType: 'Warehouse',
-        requirement: 'Need a 5000 sq ft warehouse with loading dock',
-        estimatedValue: '5000000',
-        priority: 'High',
-        status: 'New',
-        initialNotes: 'Interested in industrial sheds',
-        nextFollowUpAt: '2026-10-15',
-      });
-
-      // Style example row
-      const exampleRow = worksheet.getRow(2);
-      exampleRow.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFFFFFE0' },
-      };
-      exampleRow.font = { italic: true, color: { argb: 'FF666666' } };
+      // NO SAMPLE DATA ROW - Template must be empty to prevent accidental imports
 
       // Freeze header row
       worksheet.views = [{ state: 'frozen', ySplit: 1 }];
@@ -723,7 +702,7 @@ export class LeadService {
       // Add instruction rows
       instructionSheet.addRow({
         field: 'Required Fields',
-        description: 'Client Name and Phone are required (marked with *)',
+        description: 'All fields are optional. You can import partial lead data and edit later.',
       });
       instructionSheet.addRow({
         field: 'Valid Status Values',
@@ -747,7 +726,7 @@ export class LeadService {
       });
       instructionSheet.addRow({
         field: 'Important Notes',
-        description: '- Remove or replace the example row before importing\n- Maximum 1000 rows per file\n- Duplicate leads will be detected based on email or phone',
+        description: '- Template is empty - add your data before importing\n- Maximum 1000 rows per file\n- Duplicate leads will be detected based on email or phone\n- All fields are optional - you can import partial data',
       });
 
       // Style instruction rows
@@ -783,7 +762,6 @@ export class LeadService {
         filename: 'leads_import_template.xlsx',
       };
     } catch (error) {
-      console.error('Template generation error:', error);
       throw new BadRequestException('Failed to generate Excel template. Please try again later.');
     }
   }
@@ -804,6 +782,15 @@ export class LeadService {
       throw new BadRequestException('File size exceeds 5MB limit');
     }
 
+    // Reject CSV files - only XLSX is supported via ExcelJS
+    if (file.originalname && file.originalname.toLowerCase().endsWith('.csv')) {
+      throw new BadRequestException('CSV files are not supported. Please use an Excel (.xlsx) file.');
+    }
+
+    if (file.originalname && !file.originalname.toLowerCase().endsWith('.xlsx')) {
+      throw new BadRequestException('Only Excel (.xlsx) files are supported. Please use an Excel file.');
+    }
+
     let rawData: any[];
     try {
       const workbook = new ExcelJS.Workbook();
@@ -822,7 +809,9 @@ export class LeadService {
       rawData = [];
       worksheet.eachRow((row, rowNumber) => {
         if (rowNumber === 1) return; // Skip header
-        const rowData: any = {};
+        const rowData: any = {
+          _excelRowNumber: rowNumber, // Preserve original Excel row number
+        };
         row.eachCell((cell, colNumber) => {
           const header = worksheet.getRow(1).getCell(colNumber).value as string;
           if (header) {
@@ -832,27 +821,47 @@ export class LeadService {
               cellValue = (cellValue as any).text;
             } else if (cellValue && typeof cellValue === 'object' && 'result' in cellValue) {
               cellValue = (cellValue as any).result;
+            } else if (cellValue && typeof cellValue === 'object' && 'formula' in cellValue) {
+              // Handle formula results
+              cellValue = (cellValue as any).result || (cellValue as any).text || '';
+            } else if (cellValue instanceof Date) {
+              // Handle Excel date cells - convert to YYYY-MM-DD
+              const year = cellValue.getFullYear();
+              const month = String(cellValue.getMonth() + 1).padStart(2, '0');
+              const day = String(cellValue.getDate()).padStart(2, '0');
+              cellValue = `${year}-${month}-${day}`;
             }
             rowData[header] = cellValue !== null && cellValue !== undefined ? String(cellValue) : '';
           }
         });
-        if (Object.keys(rowData).length > 0) {
+        if (Object.keys(rowData).length > 1) { // At least one data field besides _excelRowNumber
           rawData.push(rowData);
         }
       });
 
+      // Allow empty files (headers only) - return zero rows instead of error
       if (!rawData || rawData.length === 0) {
-        throw new BadRequestException('File is empty or contains no data rows');
+        return {
+          total: 0,
+          valid: 0,
+          invalid: 0,
+          duplicates: 0,
+          validRows: [],
+          errors: [],
+          duplicatesList: [],
+        };
       }
 
-      if (rawData.length > MAX_ROWS) {
-        throw new BadRequestException(`File exceeds ${MAX_ROWS} row limit. Found ${rawData.length} rows.`);
+      // Check row limit before processing (excluding header)
+      const dataRowCount = rawData.length;
+      if (dataRowCount > MAX_ROWS) {
+        throw new BadRequestException(`File exceeds ${MAX_ROWS} row limit. Found ${dataRowCount} rows.`);
       }
     } catch (error) {
       if (error instanceof BadRequestException) {
         throw error;
       }
-      throw new BadRequestException('Failed to read Excel file. Please ensure it is a valid .xlsx or .csv file.');
+      throw new BadRequestException('Failed to read Excel file. Please ensure it is a valid .xlsx file.');
     }
 
     const validRows: Record<string, any>[] = [];
@@ -878,13 +887,14 @@ export class LeadService {
 
     const normalizePhone = (phone: string) => phone.replace(/\D/g, '');
 
+    let validRowCount = 0;
     for (let i = 0; i < rawData.length; i++) {
       const row = rawData[i] as any;
-      const rowNumber = i + 2;
+      const rowNumber = row._excelRowNumber || (i + 2); // Use preserved Excel row number
       const rowErrors: string[] = [];
 
-      const clientName = row['Client Name*'] || row['Client Name'] || row['clientName'] || '';
-      const phone = row['Phone*'] || row['Phone'] || row['phone'] || '';
+      const clientName = row['Client Name'] || row['Client Name*'] || row['clientName'] || '';
+      const phone = row['Phone'] || row['Phone*'] || row['phone'] || '';
       const email = row['Email'] || row['email'] || '';
       const whatsapp = row['WhatsApp'] || row['whatsapp'] || '';
       const city = row['City'] || row['city'] || '';
@@ -897,13 +907,19 @@ export class LeadService {
       const initialNotes = row['Initial Notes'] || row['initialNotes'] || '';
       const nextFollowUpAt = row['Next Follow-up'] || row['nextFollowUpAt'] || '';
 
-      if (!clientName || clientName.trim() === '') {
-        rowErrors.push('Client Name is required');
+      // Skip completely empty rows
+      const isEmptyRow = !clientName && !phone && !email && !whatsapp && !city && 
+                        !source && !requirementType && !requirement && !estimatedValue && 
+                        !priority && !status && !initialNotes && !nextFollowUpAt;
+      
+      if (isEmptyRow) {
+        continue;
       }
+      
+      validRowCount++;
 
-      if (!phone || phone.trim() === '') {
-        rowErrors.push('Phone is required');
-      } else {
+      // All fields are optional - only validate if provided
+      if (phone && phone.trim() !== '') {
         const phoneRegex = /^\+?[\d\s-]{10,15}$/;
         if (!phoneRegex.test(phone)) {
           rowErrors.push('Invalid phone format (10-15 digits, optional + prefix)');
@@ -944,19 +960,31 @@ export class LeadService {
         }
       }
 
-      if (estimatedValue && estimatedValue.trim() !== '') {
+      if (estimatedValue !== null && estimatedValue !== undefined && estimatedValue.trim() !== '') {
         const numValue = parseFloat(estimatedValue);
         if (isNaN(numValue)) {
           rowErrors.push('Estimated value must be a number');
         }
       }
 
-      const normalizedPhone = normalizePhone(phone);
-      const duplicateLead = existingLeads.find(
-        (lead) =>
-          normalizePhone(lead.phone) === normalizedPhone ||
-          (email && lead.email?.toLowerCase() === email.toLowerCase())
-      );
+      // Duplicate detection - only check if phone or email is provided
+      const normalizedPhone = phone ? normalizePhone(phone) : null;
+      const normalizedEmail = email ? email.toLowerCase().trim() : null;
+      
+      let duplicateLead = null;
+      
+      // Check against existing leads in database
+      if (normalizedPhone || normalizedEmail) {
+        duplicateLead = existingLeads.find((lead) => {
+          const leadPhone = lead.phone ? normalizePhone(lead.phone) : null;
+          const leadEmail = lead.email ? lead.email.toLowerCase() : null;
+          
+          const phoneMatch = normalizedPhone && leadPhone && normalizedPhone === leadPhone;
+          const emailMatch = normalizedEmail && leadEmail && normalizedEmail === leadEmail;
+          
+          return phoneMatch || emailMatch;
+        });
+      }
 
       if (duplicateLead) {
         duplicatesList.push({
@@ -984,17 +1012,40 @@ export class LeadService {
           source: source || null,
           requirementType: requirementType.trim(),
           requirement: requirement.trim(),
-          estimatedValue: estimatedValue ? parseFloat(estimatedValue) : null,
+          estimatedValue: estimatedValue !== null && estimatedValue !== undefined && estimatedValue.trim() !== '' ? parseFloat(estimatedValue) : null,
           priority: priority || null,
           status: status || 'New',
           initialNotes: initialNotes.trim(),
           nextFollowUpAt: nextFollowUpAt ? new Date(nextFollowUpAt) : null,
+          _rowNumber: rowNumber, // Preserve Excel row number for import results
         });
       }
     }
 
+    // Check for duplicates within the uploaded file
+    const seenPhoneEmail = new Set<string>();
+    for (let i = validRows.length - 1; i >= 0; i--) {
+      const row = validRows[i];
+      const phoneKey = row.phone ? row.phone.replace(/\D/g, '') : null;
+      const emailKey = row.email ? row.email.toLowerCase() : null;
+      
+      const key = phoneKey || emailKey;
+      if (key && seenPhoneEmail.has(key)) {
+        // Move to errors
+        validRows.splice(i, 1);
+        errors.push({
+          rowNumber: row._rowNumber,
+          status: 'invalid',
+          errors: ['Duplicate within uploaded file'],
+          data: row,
+        });
+      } else if (key) {
+        seenPhoneEmail.add(key);
+      }
+    }
+
     return {
-      total: rawData.length,
+      total: validRowCount,
       valid: validRows.length,
       invalid: errors.length,
       duplicates: duplicatesList.length,
@@ -1039,15 +1090,16 @@ export class LeadService {
           await this.prisma.$transaction(async (tx) => {
             for (const row of batch) {
               try {
-                const normalizedPhone = row.phone.replace(/\D/g, '');
+                const normalizedPhone = row.phone ? row.phone.replace(/\D/g, '') : null;
+                const normalizedEmail = row.email ? row.email.toLowerCase().trim() : null;
 
                 const existingLead = await tx.lead.findFirst({
                   where: {
                     createdById: userId,
                     isDeleted: false,
                     OR: [
-                      { phone: { contains: row.phone, mode: 'insensitive' } },
-                      row.email ? { email: { equals: row.email, mode: 'insensitive' } } : { id: 'never-match' },
+                      normalizedPhone ? { phone: { contains: row.phone, mode: 'insensitive' } } : { id: 'never-match' },
+                      normalizedEmail ? { email: { equals: row.email, mode: 'insensitive' } } : { id: 'never-match' },
                     ],
                   },
                 });
@@ -1058,36 +1110,39 @@ export class LeadService {
                   if (duplicateHandling === 'skip') {
                     result.skipped++;
                     result.rows.push({
-                      rowNumber: currentRowIndex + 1,
+                      rowNumber: row._rowNumber || currentRowIndex + 1,
                       status: 'skipped',
                       errors: ['Duplicate lead skipped'],
                       data: row,
                     });
                   } else if (duplicateHandling === 'update') {
                     const updateData: any = {};
-                    if (row.clientName) updateData.clientName = row.clientName;
-                    if (row.companyName) updateData.companyName = row.companyName;
-                    if (row.phone) updateData.phone = row.phone;
-                    if (row.whatsapp) updateData.whatsapp = row.whatsapp;
-                    if (row.email) updateData.email = row.email;
-                    if (row.city) updateData.city = row.city;
-                    if (row.source) updateData.source = row.source;
-                    if (row.requirementType) updateData.requirementType = row.requirementType;
-                    if (row.requirement) updateData.requirement = row.requirement;
-                    if (row.estimatedValue) updateData.estimatedValue = row.estimatedValue;
-                    if (row.priority) updateData.priority = row.priority;
-                    if (row.status) updateData.status = row.status;
-                    if (row.initialNotes) updateData.initialNotes = row.initialNotes;
+                    // Only update fields that are non-empty/blank
+                    if (row.clientName && row.clientName.trim() !== '') updateData.clientName = row.clientName;
+                    if (row.companyName && row.companyName.trim() !== '') updateData.companyName = row.companyName;
+                    if (row.phone && row.phone.trim() !== '') updateData.phone = row.phone;
+                    if (row.whatsapp && row.whatsapp.trim() !== '') updateData.whatsapp = row.whatsapp;
+                    if (row.email && row.email.trim() !== '') updateData.email = row.email;
+                    if (row.city && row.city.trim() !== '') updateData.city = row.city;
+                    if (row.source && row.source.trim() !== '') updateData.source = row.source;
+                    if (row.requirementType && row.requirementType.trim() !== '') updateData.requirementType = row.requirementType;
+                    if (row.requirement && row.requirement.trim() !== '') updateData.requirement = row.requirement;
+                    if (row.estimatedValue !== null && row.estimatedValue !== undefined) updateData.estimatedValue = row.estimatedValue;
+                    if (row.priority && row.priority.trim() !== '') updateData.priority = row.priority;
+                    if (row.status && row.status.trim() !== '') updateData.status = row.status;
+                    if (row.initialNotes && row.initialNotes.trim() !== '') updateData.initialNotes = row.initialNotes;
                     if (row.nextFollowUpAt) updateData.nextFollowUpAt = row.nextFollowUpAt;
 
-                    await tx.lead.update({
-                      where: { id: existingLead.id },
-                      data: updateData,
-                    });
+                    if (Object.keys(updateData).length > 0) {
+                      await tx.lead.update({
+                        where: { id: existingLead.id },
+                        data: updateData,
+                      });
+                    }
 
                     result.imported++;
                     result.rows.push({
-                      rowNumber: currentRowIndex + 1,
+                      rowNumber: row._rowNumber || currentRowIndex + 1,
                       status: 'imported',
                       errors: [],
                       data: row,
@@ -1095,7 +1150,7 @@ export class LeadService {
                   } else {
                     result.skipped++;
                     result.rows.push({
-                      rowNumber: currentRowIndex + 1,
+                      rowNumber: row._rowNumber || currentRowIndex + 1,
                       status: 'duplicate',
                       errors: ['Duplicate lead marked for review'],
                       data: row,
@@ -1104,9 +1159,9 @@ export class LeadService {
                 } else {
                   await tx.lead.create({
                     data: {
-                      clientName: row.clientName,
+                      clientName: row.clientName || '',
                       companyName: row.companyName || null,
-                      phone: row.phone,
+                      phone: row.phone || null,
                       whatsapp: row.whatsapp || null,
                       email: row.email || null,
                       city: row.city || null,
@@ -1125,7 +1180,7 @@ export class LeadService {
 
                   result.imported++;
                   result.rows.push({
-                    rowNumber: currentRowIndex + 1,
+                    rowNumber: row._rowNumber || currentRowIndex + 1,
                     status: 'imported',
                     errors: [],
                     data: row,
@@ -1134,7 +1189,7 @@ export class LeadService {
               } catch (error) {
                 result.failed++;
                 result.rows.push({
-                  rowNumber: currentRowIndex + 1,
+                  rowNumber: row._rowNumber || currentRowIndex + 1,
                   status: 'invalid',
                   errors: [error instanceof Error ? error.message : 'Unknown error'],
                   data: row,
